@@ -92,6 +92,8 @@ func helloWorld() usecase.IOInteractorOf[myInput, myOutput] {
 	u.SetTags("transformation")
 	u.SetExpectedErrors(status.InvalidArgument)
 	// u.SetIsDeprecated(true)
+	// TODO: Reference latest example.
+	// https://github.com/swaggest/rest/blob/v0.2.61/_examples/basic/main.go
 
 	return u
 }
