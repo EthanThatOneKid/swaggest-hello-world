@@ -2,98 +2,90 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/swaggest/rest"
-	"github.com/swaggest/rest/chirouter"
-	"github.com/swaggest/rest/jsonschema"
-	"github.com/swaggest/rest/nethttp"
-	"github.com/swaggest/rest/openapi"
-	"github.com/swaggest/rest/request"
-	"github.com/swaggest/rest/response"
+	"github.com/swaggest/openapi-go/openapi3"
 	"github.com/swaggest/rest/response/gzip"
-	"github.com/swaggest/swgui/v3cdn"
+	"github.com/swaggest/rest/web"
+	swgui "github.com/swaggest/swgui/v5emb"
 	"github.com/swaggest/usecase"
 	"github.com/swaggest/usecase/status"
 )
 
+var (
+	messages = map[string]string{
+		"en-US": "Hello, %s!",
+		"ru-RU": "Привет, %s!",
+	}
+)
+
 func main() {
+	s := web.NewService(openapi3.NewReflector())
+
 	// Init API documentation schema.
-	apiSchema := &openapi.Collector{}
-	apiSchema.Reflector().SpecEns().Info.Title = "Basic Example"
-	apiSchema.Reflector().SpecEns().Info.WithDescription("This app showcases a trivial REST API.")
-	apiSchema.Reflector().SpecEns().Info.Version = "v1.2.3"
-
-	// Setup request decoder and validator.
-	validatorFactory := jsonschema.NewFactory(apiSchema, apiSchema)
-	decoderFactory := request.NewDecoderFactory()
-	decoderFactory.ApplyDefaults = true
-	decoderFactory.SetDecoderFunc(rest.ParamInPath, chirouter.PathToURLValues)
-
-	// Create router.
-	r := chirouter.NewWrapper(chi.NewRouter())
+	s.OpenAPISchema().SetTitle("Basic Example")
+	s.OpenAPISchema().SetDescription("This app showcases a trivial REST API.")
+	s.OpenAPISchema().SetVersion("v1.2.3")
 
 	// Setup middlewares.
-	r.Use(
-		middleware.Recoverer,                          // Panic recovery.
-		nethttp.OpenAPIMiddleware(apiSchema),          // Documentation collector.
-		request.DecoderMiddleware(decoderFactory),     // Request decoder setup.
-		request.ValidatorMiddleware(validatorFactory), // Request validator setup.
-		response.EncoderMiddleware,                    // Response encoder setup.
-		gzip.Middleware,                               // Response compression with support for direct gzip pass through.
+	s.Wrap(
+		gzip.Middleware, // Response compression with support for direct gzip pass through.
 	)
 
 	// Add use case handler to router.
-	r.Method(http.MethodPost, "/doubler/{param1}", nethttp.NewHandler(helloWorld()))
+	s.Get("/hello/{name}", helloWorld())
 
 	// Swagger UI endpoint at /docs.
-	r.Method(http.MethodGet, "/docs/openapi.json", apiSchema)
-	r.Mount("/docs", v3cdn.NewHandler(apiSchema.Reflector().Spec.Info.Title,
-		"/docs/openapi.json", "/docs"))
+	s.Docs("/docs", swgui.New)
 
 	// Start server.
-	// TODO: Get port from CLI flags.
-	log.Println("http://localhost:8000/docs")
-	if err := http.ListenAndServe(":8000", r); err != nil {
+	log.Println("http://localhost:8011/docs")
+	if err := http.ListenAndServe("localhost:8011", s); err != nil {
 		log.Fatal(err)
 	}
 }
 
+// Declare input port type.
+type helloInput struct {
+	Locale string `query:"locale" default:"en-US" pattern:"^[a-z]{2}-[A-Z]{2}$" enum:"ru-RU,en-US"`
+	Name   string `path:"name" minLength:"3"` // Field tags define parameter location and JSON schema constraints.
+}
+
+// Declare output port type.
+type helloOutput struct {
+	Now     time.Time `header:"X-Now" json:"-"`
+	Message string    `json:"message"`
+}
+
 // Configure use case interactor in application layer.
-type myInput struct {
-	Param1 int    `path:"param1" description:"Parameter in resource path." multipleOf:"2"`
-	Param2 string `json:"param2" description:"Parameter in resource body."`
-}
 
-type myOutput struct {
-	Value1 int    `json:"value1"`
-	Value2 string `json:"value2"`
-}
+func helloWorld() usecase.IOInteractor {
+	// Create use case interactor with references to input/output types and interaction function.
+	u := usecase.NewIOI(new(helloInput), new(helloOutput), func(ctx context.Context, input, output interface{}) error {
+		var (
+			in  = input.(*helloInput)
+			out = output.(*helloOutput)
+		)
 
-func helloWorld() usecase.IOInteractorOf[myInput, myOutput] {
-	u := usecase.NewInteractor(func(ctx context.Context, input myInput, output *myOutput) error {
-		if input.Param1%2 != 0 {
-			return status.InvalidArgument
+		msg, available := messages[in.Locale]
+		if !available {
+			return status.Wrap(errors.New("unknown locale"), status.InvalidArgument)
 		}
 
-		// Do something to set output based on input.
-		output.Value1 = input.Param1 + input.Param1
-		output.Value2 = input.Param2 + input.Param2
+		out.Message = fmt.Sprintf(msg, in.Name)
+		out.Now = time.Now()
 
 		return nil
 	})
 
-	// Additional properties can be configured for purposes of automated documentation.
-	u.SetTitle("Doubler")
-	u.SetDescription("Doubler doubles parameter values.")
-	u.SetTags("transformation")
-	u.SetExpectedErrors(status.InvalidArgument)
-	// u.SetIsDeprecated(true)
-	// TODO: Reference latest example.
-	// https://github.com/swaggest/rest/blob/v0.2.61/_examples/basic/main.go
+	// Describe use case interactor.
+	u.SetTitle("Greeter")
+	u.SetDescription("Greeter greets you.")
 
+	u.SetExpectedErrors(status.InvalidArgument)
 	return u
 }
